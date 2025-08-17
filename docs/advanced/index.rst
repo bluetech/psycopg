@@ -13,6 +13,7 @@ usages.
 
     async
     typing
+    logical_replication
     rows
     pool
     cursors

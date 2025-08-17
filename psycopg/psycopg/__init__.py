@@ -19,6 +19,21 @@ from ._column import Column
 from .dbapi20 import BINARY, DATETIME, NUMBER, ROWID, STRING, Binary, Date
 from .dbapi20 import DateFromTicks, Time, TimeFromTicks, Timestamp, TimestampFromTicks
 from .version import __version__ as __version__  # noqa: F401
+from ._pgoutput import (
+    Begin,
+    ChangeEvent,
+    ColumnDef,
+    Commit,
+    Delete,
+    Insert,
+    Message,
+    Origin,
+    Relation,
+    RelationRef,
+    Truncate,
+    Type,
+    Update,
+)
 from ._pipeline import AsyncPipeline, Pipeline
 from .connection import Connection
 from .raw_cursor import AsyncRawCursor, AsyncRawServerCursor, RawCursor, RawServerCursor
@@ -84,6 +99,20 @@ __all__ = [
     "ServerCursor",
     "Transaction",
     "Xid",
+    # Logical replication types
+    "ChangeEvent",
+    "Begin",
+    "Message",
+    "Commit",
+    "Relation",
+    "Type",
+    "ColumnDef",
+    "RelationRef",
+    "Insert",
+    "Update",
+    "Delete",
+    "Truncate",
+    "Origin",
     # DBAPI exports
     "connect",
     "apilevel",
