@@ -6,11 +6,10 @@ Psycopg connection object (async version)
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from time import monotonic
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Sequence, cast, overload
+from typing import TYPE_CHECKING, Any, cast, overload
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator, AsyncIterator
 
@@ -18,21 +17,21 @@ from . import errors as e
 from . import pq, waiting
 from .abc import RV, AdaptContext, ConnDict, ConnParam, Params, PQGen, Query
 from ._tpc import Xid
-from .rows import AsyncRowFactory, Row, args_row, tuple_row
+from .rows import AsyncRowFactory, Row, args_row, dict_row, tuple_row
 from .adapt import AdaptersMap
 from ._enums import IsolationLevel
 from ._compat import Self
 from .conninfo import conninfo_attempts_async, conninfo_to_dict, make_conninfo
 from .conninfo import timeout_from_conninfo
-from ._pgoutput import ChangeEvent, Commit
 from ._pipeline import AsyncPipeline
 from .generators import notifies
 from .transaction import AsyncTransaction
 from .cursor_async import AsyncCursor
 from ._capabilities import capabilities
+from .client_cursor import AsyncClientCursor
+from ._logical_async import AsyncLogical
 from ._connection_base import BaseConnection, CursorRow, Notify
 from ._server_cursor_async import AsyncServerCursor
-from ._replication_conn_async import ReplicationConnection
 
 if True:  # ASYNC
     import sys
@@ -411,136 +410,10 @@ class AsyncConnection(BaseConnection[Row]):
             finally:
                 self._notifies_backlog = d
 
-    async def subscribe(
-        self,
-        publications: Sequence[str],
-        *,
-        slot: str | None = None,
-        create_slot: bool = True,
-        temporary_slot: bool = False,
-        drop_slot_on_close: bool = False,
-        start_lsn: str | None = None,
-        messages: bool = False,
-        status_interval: float = 10.0,
-        ack_every: int = 1,
-        stop_after: int | None = None,
-    ) -> AsyncIterator[ChangeEvent]:
-        """Subscribe to a set of logical replication publications and yield
-        change events.
-
-        The function opens a dedicated replication connection derived from the
-        provided connection's DSN, manages the replication slot lifecycle (if
-        requested), starts a logical stream, and yields events. Commit
-        acknowledgements are sent.
-
-        - Open a dedicated replication connection derived from the connection DSN.
-        - Optionally, create a logical replication slot (temporary or permanent).
-        - Ask the server to start streaming logical replication messages.
-        - Manage acknowledgements (write/flush/apply) according to the requested
-          frequency.
-        - Optionally, drop the replication slot on exit.
-        """
-        if not publications:
-            raise e.ProgrammingError("publications must be a non-empty sequence")
-
-        if not create_slot and not slot:
-            raise e.ProgrammingError("slot must be specified when create_slot is False")
-
-        if ack_every < 1:
-            raise e.ProgrammingError("ack_every must be at least 1")
-
-        # Resolve slot name (with safe default when requested to create)
-        dbname = self.info.dbname
-        if not slot:
-            pubs = ",".join(sorted(publications))
-            h = hashlib.sha256(pubs.encode()).hexdigest()[:8]
-            base = f"psycopg_{dbname}_{h}".lower()
-            # Sanitize: keep only [a-z0-9_], trim to 63 chars (PostgreSQL NAMEDATALEN-1)
-            safe = []
-            for ch in base:
-                if ("a" <= ch <= "z") or ("0" <= ch <= "9") or ch == "_":
-                    safe.append(ch)
-                else:
-                    safe.append("_")
-            slot = "".join(safe)[:63]
-
-        # State for ack_every handling
-        commit_count = 0
-        pending_commit_lsn: int | None = None
-
-        dsn = self.info.dsn
-        async with await ReplicationConnection.connect(dsn, self.adapters) as rconn:
-            if create_slot:
-                _ = await rconn.create_logical_slot(
-                    slot,
-                    plugin="pgoutput",
-                    temporary=temporary_slot,
-                    two_phase=False,
-                    snapshot="export",
-                    failover=None,
-                )
-
-                # If start_lsn not specified, it's ok to use 0/0 and let server decide.
-                # Alternatively, could start from consistent_point; for now follow 0/0.
-
-            # Start logical streaming via CopyBoth
-            stream = await rconn.start_logical(
-                slot,
-                publications=publications,
-                start_lsn=start_lsn or None,
-                messages=messages,
-            )
-            stream.set_status_interval(status_interval)
-
-            try:
-                async with stream:
-                    async for ev in stream:
-                        yield ev
-
-                        if isinstance(ev, Commit):
-                            commit_count += 1
-                            pending_commit_lsn = ev.commit_lsn
-
-                            if commit_count % ack_every == 0:
-                                await stream.ack(
-                                    pending_commit_lsn,
-                                    write=True,
-                                    flush=True,
-                                    apply=True,
-                                    request_reply=False,
-                                )
-                                pending_commit_lsn = None
-
-                            if stop_after is not None and commit_count >= stop_after:
-                                # Final ack if there is a pending one
-                                if pending_commit_lsn is not None:
-                                    await stream.ack(
-                                        pending_commit_lsn,
-                                        write=True,
-                                        flush=True,
-                                        apply=True,
-                                        request_reply=False,
-                                    )
-                                    pending_commit_lsn = None
-                                break
-
-                    # If the stream ends from server side, send any pending ack
-                    if pending_commit_lsn is not None:
-                        await stream.ack(
-                            pending_commit_lsn,
-                            write=True,
-                            flush=True,
-                            apply=True,
-                            request_reply=False,
-                        )
-            finally:
-                # Drop the slot if requested and not temporary
-                if drop_slot_on_close and not temporary_slot:
-                    try:
-                        await rconn.drop_replication_slot(slot, wait=True)
-                    except Exception:
-                        # Avoid masking the original exception if any
-                        pass
+    def logical(self) -> AsyncLogical:
+        cursor = self.cursor(row_factory=dict_row)
+        # assert isinstance(cursor, AsyncClientCursor), type(cursor)
+        return AsyncLogical(cursor)
 
     @asynccontextmanager
     async def pipeline(self) -> AsyncIterator[AsyncPipeline]:

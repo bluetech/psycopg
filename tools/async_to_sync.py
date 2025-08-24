@@ -35,7 +35,7 @@ ALL_INPUTS = """
     psycopg/psycopg/connection_async.py
     psycopg/psycopg/cursor_async.py
     psycopg/psycopg/_server_cursor_async.py
-    psycopg/psycopg/_replication_conn_async.py
+    psycopg/psycopg/_logical_async.py
     psycopg_pool/psycopg_pool/null_pool_async.py
     psycopg_pool/psycopg_pool/pool_async.py
     psycopg_pool/psycopg_pool/sched_async.py
@@ -46,7 +46,7 @@ ALL_INPUTS = """
     tests/pool/test_pool_common_async.py
     tests/pool/test_pool_null_async.py
     tests/pool/test_sched_async.py
-    tests/replication/test_subscribe_async.py
+    tests/test_logical_async.py
     tests/test_connection_async.py
     tests/test_conninfo_attempts_async.py
     tests/test_copy_async.py
@@ -298,6 +298,8 @@ class RenameAsyncToSync(ast.NodeTransformer):  # type: ignore
         "AsyncGenerator": "Generator",
         "AsyncIterator": "Iterator",
         "AsyncLibpqWriter": "LibpqWriter",
+        "AsyncLogical": "Logical",
+        "AsyncLogicalStream": "LogicalStream",
         "AsyncNullConnectionPool": "NullConnectionPool",
         "AsyncPipeline": "Pipeline",
         "AsyncQueuedLibpqWriter": "QueuedLibpqWriter",
@@ -314,7 +316,7 @@ class RenameAsyncToSync(ast.NodeTransformer):  # type: ignore
         "__aiter__": "__iter__",
         "__anext__": "__next__",
         "_copy_async": "_copy",
-        "_replication_conn_async": "_replication_conn",
+        "_logical_async": "_logical",
         "_server_cursor_async": "_server_cursor",
         "aclose": "close",
         "aclosing": "closing",

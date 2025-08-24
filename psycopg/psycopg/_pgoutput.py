@@ -1,4 +1,4 @@
-"""pgoutput events and decoder (v1, text mode)."""
+"""Types and decoder for the pgoutput logical replication output plugin."""
 
 # Copyright (C) 2025 The Psycopg Team
 

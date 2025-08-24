@@ -321,11 +321,11 @@ def copy_from(pgconn: PGconn) -> PQGen[memoryview | PGresult]:
 
     # Retrieve the final result of copy
 
-    if len(results := (yield from _fetch_many(pgconn))) > 1:
+    if (result := (yield from _fetch(pgconn))) is None:
         # TODO: too brutal? Copy worked.
         raise e.ProgrammingError("you cannot mix COPY with other operations")
 
-    if (result := results[0]).status != COMMAND_OK:
+    if result.status != COMMAND_OK:
         raise e.error_from_result(result, encoding=pgconn._encoding)
 
     return result
@@ -371,6 +371,38 @@ def copy_end(pgconn: PGconn, error: bytes | None) -> PQGen[PGresult]:
 
     # Retrieve the final result of copy
     (result,) = yield from _fetch_many(pgconn)
+    if result.status != COMMAND_OK:
+        raise e.error_from_result(result, encoding=pgconn._encoding)
+
+    return result
+
+
+def copy_both_end(pgconn: PGconn, error: bytes | None) -> PQGen[PGresult]:
+    # Retry enqueuing end copy message until successful
+    while pgconn.put_copy_end(error) == 0:
+        while not (yield WAIT_W):
+            continue
+
+    # Repeat until it the message is flushed to the server
+    while True:
+        while not (yield WAIT_W):
+            continue
+
+        if pgconn.flush() == 0:
+            break
+
+    # Wait until connection transitions to copy-out mode
+    (result,) = yield from _fetch_many(pgconn)
+    if result.status != COPY_OUT:
+        raise e.error_from_result(result, encoding=pgconn._encoding)
+
+    # The backend will soon end the copy-out mode, drain remaining copy (discarded)
+    while True:
+        result = yield from copy_from(pgconn)
+        if isinstance(result, memoryview):
+            continue
+        break
+
     if result.status != COMMAND_OK:
         raise e.error_from_result(result, encoding=pgconn._encoding)
 

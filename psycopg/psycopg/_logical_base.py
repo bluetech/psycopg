@@ -20,9 +20,6 @@ from __future__ import annotations
 import datetime
 from dataclasses import dataclass
 
-from . import errors as e
-from . import pq
-
 # Timestamp base: PostgreSQL epoch (2000-01-01)
 _PG_EPOCH = datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc)
 
@@ -31,7 +28,7 @@ _PG_EPOCH = datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class IdentifySystem:
+class IdentifySystemResult:
     """Response to IDENTIFY_SYSTEM.
 
     - systemid: cluster system identifier (text)
@@ -63,44 +60,6 @@ class CreateSlotResult:
 
 
 # Helpers
-
-
-def _decode_row_as_dict(res: pq.abc.PGresult) -> dict[str, str | None]:
-    """Decode the first row of a TUPLES_OK result into a dict name->text value.
-
-    Values are decoded using the connection encoding; NULL stays as None.
-    """
-    if res.status != pq.ExecStatus.TUPLES_OK:
-        raise e.error_from_result(
-            res, encoding=res.get_error_message().__class__.__name__
-        )
-
-    if res.ntuples != 1:
-        raise e.ProgrammingError(f"expected exactly 1 row, got {res.ntuples}")
-
-    enc: str
-    # TODO
-    # PGresult doesn't expose encoding; get it from an error-message helper or assume
-    # utf-8. Prefer the connection encoding via the attached PGconn; however we don't
-    # have it here. Most psycopg code reads via PGconn._encoding. For safety, default
-    # to utf-8 if needed.
-    try:
-        # psycopg will set the PGresult encoding context via Transformer in other paths.
-        # Here we fallback to utf-8 if we cannot infer better.
-        enc = "utf-8"
-    except Exception:
-        enc = "utf-8"
-
-    out: dict[str, str | None] = {}
-    for i in range(res.nfields):
-        name_b = res.fname(i) or b""
-        name = name_b.decode(enc, errors="replace")
-        val_b = res.get_value(0, i)
-        if val_b is None:
-            out[name] = None
-        else:
-            out[name] = val_b.decode(enc, errors="replace")
-    return out
 
 
 def _pg_now_us() -> int:

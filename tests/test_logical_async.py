@@ -4,38 +4,12 @@ import pytest
 
 import psycopg
 
-from ..acompat import asleep
+from .acompat import asleep
 
 if True:  # ASYNC
     import asyncio
 else:
     import threading
-
-
-def _ensure_logical(conn: psycopg.Connection) -> None:
-    with conn.cursor() as cur:
-        cur.execute("SHOW wal_level")
-        wal_level = next(cur)[0]
-    if str(wal_level) != "logical":
-        pytest.skip(f"wal_level is {wal_level!r} (need 'logical')")
-
-
-def _setup_objects(conn: psycopg.Connection, table: str, publication: str) -> None:
-    with conn.cursor() as cur:
-        cur.execute(f"DROP TABLE IF EXISTS public.{table} CASCADE")
-        cur.execute(
-            f"CREATE TABLE public.{table} (id SERIAL PRIMARY KEY, name TEXT, qty INT)"
-        )
-        cur.execute(f"DROP PUBLICATION IF EXISTS {publication}")
-        cur.execute(f"CREATE PUBLICATION {publication} FOR TABLE public.{table}")
-    conn.commit()
-
-
-def _teardown_objects(conn: psycopg.Connection, table: str, publication: str) -> None:
-    with conn.cursor() as cur:
-        cur.execute(f"DROP PUBLICATION IF EXISTS {publication}")
-        cur.execute(f"DROP TABLE IF EXISTS public.{table} CASCADE")
-    conn.commit()
 
 
 @pytest.mark.anyio
@@ -49,46 +23,59 @@ async def test_subscribe_end_to_end(dsn: str) -> None:
         async with (
             await psycopg.AsyncConnection.connect(dsn) as conn,
             conn.transaction(),
-            conn.cursor() as cur,
+            conn.cursor() as cursor,
         ):
-            await cur.execute(
-                f"INSERT INTO public.{table} (name, qty) VALUES (%s, %s) RETURNING id",
+            await cursor.execute(
+                f"insert into {table} (name, qty) values (%s, %s) returning id",
                 ("one", 1),
             )
-            row_id = (await anext(cur))[0]
+            row_id = (await anext(cursor))[0]
 
-            await cur.execute(
-                f"UPDATE public.{table} SET name = %s, qty = %s WHERE id = %s",
+            await cursor.execute(
+                f"update {table} set name = %s, qty = %s where id = %s",
                 ("two", 2, row_id),
             )
 
-            await cur.execute(
-                "SELECT pg_logical_emit_message(true, 'some-prefix', 'updated!')",
+            await cursor.execute(
+                "select pg_logical_emit_message(true, 'some-prefix', 'updated!')",
             )
 
-            await cur.execute(f"DELETE FROM public.{table} WHERE id = %s", (row_id,))
+            await cursor.execute(f"delete from {table} where id = %s", (row_id,))
 
     events: list[psycopg.ChangeEvent] = []
 
     async def consumer() -> None:
-        async with await psycopg.AsyncConnection.connect(dsn) as conn:
-            async for ev in conn.subscribe(
-                [publication],
-                create_slot=True,
-                temporary_slot=True,
-                drop_slot_on_close=False,
-                start_lsn=None,
-                messages=True,
-                status_interval=1.0,
-                ack_every=1,
-                stop_after=1,
-            ):
-                events.append(ev)
+        async with await psycopg.AsyncConnection.connect(
+            dsn, autocommit=True, replication="database"
+        ) as conn:
+            async with conn.logical() as logical:
+                slot = await logical.create_logical_slot("test_slot", temporary=True)
+                async with await logical.stream(
+                    slot.slot_name,
+                    publications=[publication],
+                    start_lsn="0/0",
+                    messages=True,
+                ) as stream:
+                    async for ev in stream:
+                        events.append(ev)
+                        await stream.ack(ev.lsn)
+                        if isinstance(ev, psycopg.Commit):
+                            break
 
     with psycopg.connect(dsn) as base:
         try:
-            _ensure_logical(base)
-            _setup_objects(base, table, publication)
+            with base.transaction(), base.cursor() as cursor:
+                cursor.execute("show wal_level")
+                wal_level = next(cursor)[0]
+                if str(wal_level) != "logical":
+                    pytest.skip(f"wal_level is {wal_level!r} (need 'logical')")
+
+                cursor.execute(f"drop table if exists {table} cascade")
+                cursor.execute(
+                    f"create table {table} (id serial primary key, name text, qty int)"
+                )
+                cursor.execute(f"drop publication if exists {publication}")
+                cursor.execute(f"create publication {publication} for table {table}")
 
             if True:  # ASYNC
                 producer_task = asyncio.create_task(producer())
@@ -102,8 +89,11 @@ async def test_subscribe_end_to_end(dsn: str) -> None:
                 consumer_task.start()
                 producer_task.join()
                 consumer_task.join()
+
         finally:
-            _teardown_objects(base, table, publication)
+            with base.transaction(), base.cursor() as cursor:
+                cursor.execute(f"drop publication if exists {publication}")
+                cursor.execute(f"drop table if exists {table} cascade")
 
     assert events == [
         psycopg.Begin(
