@@ -181,6 +181,8 @@ class AsyncLogical:
         self._pgconn = cursor.connection.pgconn
         self._adapters = cursor.adapters
 
+        self._pgconn.trace(1)
+
     async def close(self) -> None:
         await self._cursor.close()
 
